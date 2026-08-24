@@ -1,12 +1,75 @@
 import React,{useEffect,useState}from'react';
 import{supabase}from'./lib';
 
+const formatDate=date=>{
+  if(!date)return 'Onbekende datum';
+  const match=String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!match)return 'Onbekende datum';
+  const [,year,month,day]=match;
+  const value=new Date(Date.UTC(Number(year),Number(month)-1,Number(day)));
+  if(!Number.isNaN(value.getTime())&&Number(value.getUTCFullYear())===Number(year))return value.toLocaleDateString('nl-NL',{weekday:'long',day:'numeric',month:'long',year:Number(year)!==new Date().getFullYear()?'numeric':undefined,timeZone:'UTC'});
+  return `${day}-${month}-${year}`;
+};
+
+const formatTime=time=>String(time||'').slice(0,5)||'--:--';
+
 export default function OpenShifts({isStaff=false,userId}){
   const[shifts,setShifts]=useState([]),[profiles,setProfiles]=useState([]),[myInterests,setMyInterests]=useState(new Set()),[form,setForm]=useState({date:'',start_time:'',end_time:'',task:'',note:''}),[msg,setMsg]=useState(''),[loading,setLoading]=useState(true),[savingId,setSavingId]=useState('');
-  const load=async()=>{setLoading(true);setMsg('');const{data:openShifts,error}=await supabase.from('open_shifts').select('*').order('date').order('start_time');if(error){setShifts([]);setMsg('Open diensten konden niet worden geladen. Probeer het opnieuw.');setLoading(false);return;}if(isStaff){const[{data:allInterests,error:interestError},{data:people}]=await Promise.all([supabase.from('open_shift_interests').select('open_shift_id,user_id'),supabase.from('profiles').select('id,first_name,last_name').order('first_name')]);if(interestError)setMsg('Geïnteresseerden konden niet worden geladen.');const interestsByShift={};for(const interest of allInterests||[])(interestsByShift[interest.open_shift_id]??=[]).push(interest.user_id);setProfiles(people||[]);setShifts((openShifts||[]).map(shift=>({...shift,interestIds:interestsByShift[shift.id]||[]})))}else{const{data:ownInterests,error:interestError}=await supabase.from('open_shift_interests').select('open_shift_id').eq('user_id',userId);if(interestError)setMsg('Jouw interesse-status kon niet worden geladen. Probeer het opnieuw.');setMyInterests(new Set((ownInterests||[]).map(interest=>interest.open_shift_id)));setShifts((openShifts||[]).map(shift=>({...shift,interestIds:[]})))}setLoading(false)};
+
+  const load=async()=>{
+    setLoading(true);setMsg('');
+    const{data:openShifts,error}=await supabase.from('open_shifts').select('*').order('date').order('start_time');
+    if(error){setShifts([]);setMsg('Open diensten konden niet worden geladen. Probeer het opnieuw.');setLoading(false);return;}
+
+    if(isStaff){
+      const[{data:allInterests,error:interestError},{data:people,error:profileError}]=await Promise.all([
+        supabase.rpc('get_open_shift_interests'),
+        supabase.rpc('get_team_members')
+      ]);
+      if(interestError){setMsg('Geïnteresseerden konden niet worden geladen.');}
+      if(profileError){setProfiles([]);}else setProfiles(people||[]);
+      const interestsByShift={};
+      for(const interest of allInterests||[])(interestsByShift[interest.open_shift_id]??=[]).push(interest.user_id);
+      setShifts((openShifts||[]).map(shift=>({...shift,interestIds:interestsByShift[shift.id]||[]})));
+    }else{
+      const{data:ownInterests,error:interestError}=await supabase.from('open_shift_interests').select('open_shift_id').eq('user_id',userId);
+      if(interestError)setMsg('Jouw interesse-status kon niet worden geladen. Probeer het opnieuw.');
+      setMyInterests(new Set((ownInterests||[]).map(interest=>interest.open_shift_id)));
+      setShifts((openShifts||[]).map(shift=>({...shift,interestIds:[]})));
+    }
+    setLoading(false);
+  };
+
   useEffect(()=>{load()},[isStaff,userId]);
-  const save=async()=>{if(!form.date||!form.start_time||!form.end_time)return setMsg('Vul datum en tijden in.');const{error}=await supabase.from('open_shifts').insert(form);if(error)return setMsg('Open dienst kon niet worden opgeslagen.');setForm({date:'',start_time:'',end_time:'',task:'',note:''});setMsg('Open dienst aangemaakt.');load()};
-  const interest=async id=>{if(myInterests.has(id)||savingId)return;setSavingId(id);setMsg('');const{error}=await supabase.from('open_shift_interests').insert({open_shift_id:id,user_id:userId});setSavingId('');if(error?.code==='23505'){setMyInterests(previous=>new Set([...previous,id]));return setMsg('Je hebt al interesse getoond.')}if(error?.code==='42501')return setMsg('Je interesse kon niet worden opgeslagen omdat je account hiervoor geen toestemming heeft.');if(error)return setMsg('Interesse kon niet worden opgeslagen. Probeer het opnieuw.');setMyInterests(previous=>new Set([...previous,id]));setMsg('Je hebt interesse getoond.')};
-  const remove=async id=>{if(!confirm('Open dienst verwijderen?'))return;const{error}=await supabase.from('open_shifts').delete().eq('id',id);if(error)return setMsg('Open dienst kon niet worden verwijderd.');load()};
-  return <><h2>Open diensten</h2><p>Bekijk openstaande diensten en geef interesse door.</p>{isStaff&&<div className="card form"><div className="tw"><label>Datum<input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></label><label>Taak<input value={form.task} onChange={event=>setForm({...form,task:event.target.value})}/></label></div><div className="tw"><label>Van<input type="time" value={form.start_time} onChange={event=>setForm({...form,start_time:event.target.value})}/></label><label>Tot<input type="time" value={form.end_time} onChange={event=>setForm({...form,end_time:event.target.value})}/></label></div><label>Opmerking<textarea value={form.note} onChange={event=>setForm({...form,note:event.target.value})}/></label><button className="primary" onClick={save}>Open dienst maken</button></div>}{msg&&<div className="notice">{msg}</div>}{loading?<div className="card">Open diensten laden…</div>:<div className="list">{shifts.map(shift=>{const names=(shift.interestIds||[]).map(id=>profiles.find(profile=>profile.id===id)).filter(Boolean).map(profile=>`${profile.first_name} ${profile.last_name}`.trim());const interested=myInterests.has(shift.id);return <div className="card" key={shift.id}><b>{new Date(`${shift.date}T12:00`).toLocaleDateString('nl-NL',{weekday:'long',day:'numeric',month:'long'})}</b><span>{shift.start_time}–{shift.end_time} · {shift.task||'Open dienst'}</span>{shift.note&&<small>{shift.note}</small>}{isStaff&&<div className="notice">Geïnteresseerden: {names.length?names.join(', '):'nog niemand'}</div>}<div className="actions">{isStaff?<><span className="pill">{names.length} geïnteresseerd</span><button className="secondary" onClick={()=>remove(shift.id)}>Verwijderen</button></>:<button className="secondary" onClick={()=>interest(shift.id)} disabled={interested||savingId===shift.id}>{interested?'Je hebt interesse getoond':savingId===shift.id?'Opslaan…':'Interesse tonen'}</button>}</div></div>})}{!shifts.length&&<div className="card">Er zijn geen open diensten.</div>}</div>}</>;
+
+  const save=async()=>{
+    if(!form.date||!form.start_time||!form.end_time)return setMsg('Vul datum en tijden in.');
+    const{error}=await supabase.from('open_shifts').insert(form);
+    if(error)return setMsg('Open dienst kon niet worden opgeslagen.');
+    setForm({date:'',start_time:'',end_time:'',task:'',note:''});setMsg('Open dienst aangemaakt.');load();
+  };
+
+  const interest=async id=>{
+    if(myInterests.has(id)||savingId)return;
+    setSavingId(id);setMsg('');
+    const{error}=await supabase.from('open_shift_interests').insert({open_shift_id:id,user_id:userId});
+    setSavingId('');
+    if(error?.code==='23505'){setMyInterests(previous=>new Set([...previous,id]));return setMsg('Je hebt al interesse getoond.');}
+    if(error?.code==='42501')return setMsg('Je interesse kon niet worden opgeslagen omdat je account hiervoor geen toestemming heeft.');
+    if(error)return setMsg('Interesse kon niet worden opgeslagen. Probeer het opnieuw.');
+    setMyInterests(previous=>new Set([...previous,id]));setMsg('Je hebt interesse getoond.');
+  };
+
+  const remove=async id=>{
+    if(!confirm('Open dienst verwijderen?'))return;
+    const{error}=await supabase.from('open_shifts').delete().eq('id',id);
+    if(error)return setMsg('Open dienst kon niet worden verwijderd.');
+    load();
+  };
+
+  return <><h2>Open diensten</h2><p>Bekijk openstaande diensten en geef interesse door.</p>
+    {isStaff&&<div className="card form"><div className="tw"><label>Datum<input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></label><label>Taak<input value={form.task} onChange={event=>setForm({...form,task:event.target.value})}/></label></div><div className="tw"><label>Van<input type="time" value={form.start_time} onChange={event=>setForm({...form,start_time:event.target.value})}/></label><label>Tot<input type="time" value={form.end_time} onChange={event=>setForm({...form,end_time:event.target.value})}/></label></div><label>Opmerking<textarea value={form.note} onChange={event=>setForm({...form,note:event.target.value})}/></label><button className="primary" onClick={save}>Open dienst maken</button></div>}
+    {msg&&<div className="notice">{msg}</div>}
+    {loading?<div className="card">Open diensten laden…</div>:<div className="list">{shifts.map(shift=>{const names=(shift.interestIds||[]).map(id=>profiles.find(profile=>profile.id===id)).filter(Boolean).map(profile=>`${profile.first_name||''} ${profile.last_name||''}`.trim()).filter(Boolean);const interested=myInterests.has(shift.id);return <div className="card" key={shift.id}><b>{formatDate(shift.date)}</b><span>{formatTime(shift.start_time)}–{formatTime(shift.end_time)} · {shift.task||'Open dienst'}</span>{shift.note&&<small>{shift.note}</small>}{isStaff&&<div className="notice">Geïnteresseerden: {names.length?names.join(', '):'nog niemand'}</div>}<div className="actions">{isStaff?<><span className="pill">{names.length} geïnteresseerd</span><button className="secondary" onClick={()=>remove(shift.id)}>Verwijderen</button></>:<button className="secondary" onClick={()=>interest(shift.id)} disabled={interested||savingId===shift.id}>{interested?'Je hebt interesse getoond':savingId===shift.id?'Opslaan…':'Interesse tonen'}</button>}</div></div>})}{!shifts.length&&<div className="card">Er zijn geen open diensten.</div>}</div>}
+  </>;
 }
